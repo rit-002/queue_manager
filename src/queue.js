@@ -1,9 +1,9 @@
-// src/queue.js
-import { v4 as uuidv4 } from "uuid";
+const { v4: uuidv4 } = require("uuid");
 
 class QueueManager {
-  constructor() {
+  constructor(defaultWaitTime = 30) {
     this.queues = {};
+    this.defaultWaitTime = defaultWaitTime;
   }
 
   createQueue(eventId, orgId, limit = 100, description = "") {
@@ -34,7 +34,7 @@ class QueueManager {
       return { status: "joined", token };
     }
 
-    return { status: "wait", waitTime: 30 };
+    return { status: "wait", waitTime: this.defaultWaitTime };
   }
 
   getQueueStatus(eventId, orgId) {
@@ -49,4 +49,4 @@ class QueueManager {
   }
 }
 
-module.exports = QueueManager; // last line if needed
+module.exports = QueueManager;
