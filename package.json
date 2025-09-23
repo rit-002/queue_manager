@@ -1,15 +1,15 @@
 {
   "name": "event-queue-manager",
   "version": "1.0.3",
-  "description": "",
+  "description": "A Node.js queue manager library for events and organizations",
   "main": "index.js",
+  "type": "commonjs",
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1"
   },
-  "keywords": [],
-  "author": "",
+  "keywords": ["queue", "event", "manager"],
+  "author": "Your Name",
   "license": "ISC",
-  "type": "commonjs",
   "dependencies": {
     "uuid": "^13.0.0"
   }
