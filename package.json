@@ -1,6 +1,6 @@
 {
   "name": "event-queue-manager",
-  "version": "1.0.4",
+  "version": "1.0.5",
   "description": "A Node.js queue manager library for events and organizations",
   "main": "index.js",
   "type": "commonjs",
