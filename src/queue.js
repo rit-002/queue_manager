@@ -6,7 +6,7 @@ class QueueManager {
     this.defaultWaitTime = defaultWaitTime; // wait time in seconds
   }
 
-  createQueue(eventId, orgId, limit = 100, description = "") {
+  createQueue(eventId, orgId, limit = 2, description = "") {
     const key = `${eventId}_${orgId}`;
     if (!this.queues[key]) {
       this.queues[key] = {
@@ -44,7 +44,9 @@ class QueueManager {
       setTimeout(() => {
         // remove from pending
         queue.pendingUsers = queue.pendingUsers.filter((u) => u !== userId);
-        console.log(`[QueueManager] User ${userId} can try joining again for ${key}`);
+        console.log(
+          `[QueueManager] User ${userId} can try joining again for ${key}`
+        );
       }, this.defaultWaitTime * 1000);
     }
 
