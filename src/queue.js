@@ -49,4 +49,4 @@ class QueueManager {
   }
 }
 
-export default QueueManager;
+module.exports = QueueManager; // last line if needed
