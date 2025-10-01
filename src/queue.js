@@ -1,58 +1,35 @@
 const { v4: uuidv4 } = require("uuid");
-const { MongoClient, ObjectId } = require("mongodb");
 
 class QueueManager {
-  constructor(dbUrl = "mongodb://127.0.0.1:27017", dbName = "queue-manager") {
-    this.client = new MongoClient(dbUrl);
-    this.dbName = dbName;
-    this.connected = false;
+  constructor() {
+    this.events = {}; // store events: { "eventId_orgId": { ... } }
+    this.users = {}; // store users per event: { "eventId_orgId": [ { userId, token, joinedAt } ] }
   }
 
-  async connect() {
-    if (!this.connected) {
-      await this.client.connect();
-      this.db = this.client.db(this.dbName);
-      this.events = this.db.collection("events");
-      this.users = this.db.collection("queueUsers");
-      this.connected = true;
-    }
-  }
+  // Create a queue
+  createQueue(eventName, orgId, limit = 100, description = "") {
+    const key = `${eventName}_${orgId}`;
+    if (this.events[key]) return this.events[key];
 
-  // Create an event queue
-  async createQueue(eventName, orgId, limit = 100, description = "") {
-    await this.connect();
-    const existing = await this.events.findOne({ name: eventName, orgId });
-    if (existing) return existing;
-
-    const result = await this.events.insertOne({
+    const event = {
       name: eventName,
       orgId,
       limit,
       description,
       createdAt: new Date(),
-      freezeUntil: null, // for 30 sec freeze
-    });
-
-    return {
-      _id: result.insertedId,
-      name: eventName,
-      orgId,
-      limit,
-      description,
       freezeUntil: null,
     };
+
+    this.events[key] = event;
+    this.users[key] = [];
+    return event;
   }
 
   // Join a queue
-  async joinQueue(eventName, orgId, userId) {
-    await this.connect();
-
-    const event = await this.events.findOne({ name: eventName, orgId });
+  joinQueue(eventName, orgId, userId) {
+    const key = `${eventName}_${orgId}`;
+    const event = this.events[key];
     if (!event) throw new Error("Event not found");
-
-    // Check if user already in queue
-    const already = await this.users.findOne({ eventId: event._id, userId });
-    if (already) return { status: "already", userId };
 
     const now = new Date();
 
@@ -62,62 +39,51 @@ class QueueManager {
       return { status: "wait", waitTime: remaining };
     }
 
-    // Count current users
-    const count = await this.users.countDocuments({ eventId: event._id });
+    // Check if user already joined
+    const already = this.users[key].find((u) => u.userId === userId);
+    if (already) return { status: "already", userId };
+
+    const count = this.users[key].length;
 
     if (count < event.limit) {
       const token = uuidv4();
-      await this.users.insertOne({
-        eventId: event._id,
-        userId,
-        token,
-        joinedAt: now,
-      });
+      this.users[key].push({ userId, token, joinedAt: now });
 
-      // If queue reaches limit, set freeze for 30 seconds
+      // Freeze if limit reached
       if (count + 1 >= event.limit) {
-        await this.events.updateOne(
-          { _id: event._id },
-          { $set: { freezeUntil: new Date(now.getTime() + 30 * 1000) } }
-        );
+        event.freezeUntil = new Date(now.getTime() + 30 * 1000);
       }
 
       return { status: "joined", token };
     }
 
-    // If somehow over limit, enforce freeze
-    await this.events.updateOne(
-      { _id: event._id },
-      { $set: { freezeUntil: new Date(now.getTime() + 30 * 1000) } }
-    );
+    // Over limit, enforce freeze
+    event.freezeUntil = new Date(now.getTime() + 30 * 1000);
     return { status: "wait", waitTime: 30 };
   }
 
   // Get queue status
-  async getQueueStatus(eventName, orgId) {
-    await this.connect();
-    const event = await this.events.findOne({ name: eventName, orgId });
+  getQueueStatus(eventName, orgId) {
+    const key = `${eventName}_${orgId}`;
+    const event = this.events[key];
     if (!event) return null;
 
-    const users = await this.users.find({ eventId: event._id }).toArray();
     const now = new Date();
     let waitTime = 0;
-
     if (event.freezeUntil && event.freezeUntil > now) {
       waitTime = Math.ceil((event.freezeUntil - now) / 1000);
     }
 
-    return { ...event, users, waitTime };
+    return { ...event, users: this.users[key], waitTime };
   }
 
-  // Reset a queue
-  async resetQueue(eventName, orgId) {
-    await this.connect();
-    const event = await this.events.findOne({ name: eventName, orgId });
-    if (!event) return false;
+  // Reset queue
+  resetQueue(eventName, orgId) {
+    const key = `${eventName}_${orgId}`;
+    if (!this.events[key]) return false;
 
-    await this.users.deleteMany({ eventId: event._id });
-    await this.events.deleteOne({ _id: event._id });
+    delete this.events[key];
+    delete this.users[key];
     return true;
   }
 }
