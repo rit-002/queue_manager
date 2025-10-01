@@ -7,7 +7,7 @@ class QueueManager {
   }
 
   // Create a queue
-  createQueue(eventName, orgId, limit = 100, description = "") {
+  createQueue(eventName, orgId, limit = 3, description = "") {
     const key = `${eventName}_${orgId}`;
     if (this.events[key]) return this.events[key];
 
