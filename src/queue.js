@@ -1,5 +1,5 @@
-import { v4 as uuidv4 } from "uuid";
-import Redis from "ioredis";
+const { v4: uuidv4 } = require("uuid");
+const Redis = require("ioredis");
 
 class QueueManager {
   constructor() {
@@ -102,4 +102,4 @@ class QueueManager {
   }
 }
 
-export default QueueManager;
+module.exports = QueueManager;
