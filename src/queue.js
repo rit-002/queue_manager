@@ -1,132 +1,105 @@
-const { v4: uuidv4 } = require("uuid");
+import { v4 as uuidv4 } from "uuid";
+import Redis from "ioredis";
 
 class QueueManager {
   constructor() {
-    this.events = {}; // { "eventId_orgId": { name, orgId, limit, freezeUntil, ... } }
-    this.users = {}; // { "eventId_orgId": [ { userId, token, joinedAt } ] }
-    this.defaultFreeze = 30 * 1000; // default 30 sec freeze
+    this.redis = new Redis(); // default localhost:6379
+    this.defaultFreeze = 30 * 1000;
   }
 
-  // Generate unique key
   _getKey(eventName, orgId) {
-    return `${eventName}_${orgId}`;
+    return `queue:${eventName}_${orgId}`;
   }
 
-  // Cleanup freeze if expired
-  _cleanupFreeze(event) {
-    const now = new Date();
-    if (event.freezeUntil && event.freezeUntil <= now) {
-      event.freezeUntil = null;
-    }
-  }
-
-  // Create a queue
-  createQueue(
+  async createQueue(
     eventName,
     orgId,
-    limit = 3,
+    limit = 1,
     description = "",
     freezeDuration = null
   ) {
     const key = this._getKey(eventName, orgId);
-    if (this.events[key]) return this.events[key];
+    const exists = await this.redis.hgetall(key);
+
+    if (exists.name) return exists; // already created
 
     const event = {
       name: eventName,
       orgId,
       limit,
       description,
-      createdAt: new Date(),
+      createdAt: Date.now(),
       freezeUntil: null,
-      freezeDuration: freezeDuration || this.defaultFreeze, // custom freeze
+      freezeDuration: freezeDuration || this.defaultFreeze,
     };
 
-    this.events[key] = event;
-    this.users[key] = [];
+    await this.redis.hset(key, event);
+    await this.redis.set(`${key}:users`, JSON.stringify([]));
     return event;
   }
 
-  // Join a queue
-  joinQueue(eventName, orgId, userId) {
+  async joinQueue(eventName, orgId, userId) {
     const key = this._getKey(eventName, orgId);
-    const event = this.events[key];
-    if (!event) throw new Error("Event not found");
+    const event = await this.redis.hgetall(key);
+    if (!event.name) throw new Error("Event not found");
 
-    const now = new Date();
+    const now = Date.now();
 
-    // 🔹 Auto-reset expired freeze
-    this._cleanupFreeze(event);
+    // cleanup freeze
+    if (event.freezeUntil && Number(event.freezeUntil) <= now) {
+      event.freezeUntil = null;
+    }
 
-    // 🔹 If queue still frozen
-    if (event.freezeUntil && event.freezeUntil > now) {
+    if (event.freezeUntil && Number(event.freezeUntil) > now) {
       const remaining = Math.ceil((event.freezeUntil - now) / 1000);
       return { status: "wait", waitTime: remaining };
     }
 
-    // 🔹 Prevent duplicate join
-    const already = this.users[key].find((u) => u.userId === userId);
-    if (already) return { status: "already", userId };
+    let users = JSON.parse(await this.redis.get(`${key}:users`)) || [];
 
-    const count = this.users[key].length;
-
-    // 🔹 If queue full → set freeze immediately
-    if (count >= event.limit) {
-      event.freezeUntil = new Date(now.getTime() + event.freezeDuration);
-      return { status: "wait", waitTime: event.freezeDuration / 1000 };
+    // already joined
+    if (users.find((u) => u.userId === userId)) {
+      return { status: "already", userId };
     }
 
-    // 🔹 Allow join
-    const token = uuidv4();
-    this.users[key].push({ userId, token, joinedAt: now });
+    if (users.length >= event.limit) {
+      event.freezeUntil = now + Number(event.freezeDuration);
+      await this.redis.hset(key, event);
+      return { status: "wait", waitTime: Number(event.freezeDuration) / 1000 };
+    }
 
-    // 🔹 If queue just became full → freeze for next users
-    if (this.users[key].length >= event.limit) {
-      event.freezeUntil = new Date(now.getTime() + event.freezeDuration);
+    // join
+    const token = uuidv4();
+    users.push({ userId, token, joinedAt: now });
+    await this.redis.set(`${key}:users`, JSON.stringify(users));
+
+    if (users.length >= event.limit) {
+      event.freezeUntil = now + Number(event.freezeDuration);
+      await this.redis.hset(key, event);
     }
 
     return { status: "joined", token };
   }
 
-  // Get queue status
-  getQueueStatus(eventName, orgId) {
+  async getQueueStatus(eventName, orgId) {
     const key = this._getKey(eventName, orgId);
-    const event = this.events[key];
-    if (!event) return null;
+    const event = await this.redis.hgetall(key);
+    if (!event.name) return null;
 
-    this._cleanupFreeze(event);
+    let users = JSON.parse(await this.redis.get(`${key}:users`)) || [];
+    const now = Date.now();
+
+    if (event.freezeUntil && Number(event.freezeUntil) <= now) {
+      event.freezeUntil = null;
+    }
 
     let waitTime = 0;
     if (event.freezeUntil) {
-      waitTime = Math.ceil((event.freezeUntil - new Date()) / 1000);
+      waitTime = Math.ceil((event.freezeUntil - now) / 1000);
     }
 
-    return { ...event, users: this.users[key], waitTime };
-  }
-
-  // Reset queue
-  resetQueue(eventName, orgId) {
-    const key = this._getKey(eventName, orgId);
-    if (!this.events[key]) return false;
-
-    delete this.events[key];
-    delete this.users[key];
-    return true;
-  }
-
-  // 🔹 Background auto-clean expired freezes (optional)
-  autoCleanup(interval = 5000) {
-    setInterval(() => {
-      const now = new Date();
-      for (const key in this.events) {
-        if (
-          this.events[key].freezeUntil &&
-          this.events[key].freezeUntil <= now
-        ) {
-          this.events[key].freezeUntil = null;
-        }
-      }
-    }, interval);
+    return { ...event, users, waitTime };
   }
 }
 
-module.exports = QueueManager;
+export default QueueManager;
