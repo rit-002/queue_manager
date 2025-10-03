@@ -1,8 +1,10 @@
 const { v4: uuidv4 } = require("uuid");
+const EventEmitter = require("events");
 
-class QueueManager {
+class QueueManager extends EventEmitter {
   constructor() {
-    this.events = {}; // memory ke andar event queues
+    super();
+    this.events = {};
     this.defaultFreeze = 30 * 1000;
   }
 
@@ -18,7 +20,7 @@ class QueueManager {
     freezeDuration = null
   ) {
     const key = this._getKey(eventName, orgId);
-    if (this.events[key]) return this.events[key]; // already created
+    if (this.events[key]) return this.events[key];
 
     const event = {
       name: eventName,
@@ -32,6 +34,7 @@ class QueueManager {
     };
 
     this.events[key] = event;
+    this.emit("update", { type: "create", event });
     return event;
   }
 
@@ -41,28 +44,25 @@ class QueueManager {
     if (!event) throw new Error("Event not found");
 
     const now = Date.now();
-
-    // cleanup freeze
-    if (event.freezeUntil && event.freezeUntil <= now) {
-      event.freezeUntil = null;
-    }
+    if (event.freezeUntil && event.freezeUntil <= now) event.freezeUntil = null;
 
     if (event.freezeUntil && event.freezeUntil > now) {
-      const remaining = Math.ceil((event.freezeUntil - now) / 1000);
-      return { status: "wait", waitTime: remaining };
+      return {
+        status: "wait",
+        waitTime: Math.ceil((event.freezeUntil - now) / 1000),
+      };
     }
 
-    // already joined
     if (event.users.find((u) => u.userId === userId)) {
       return { status: "already", userId };
     }
 
     if (event.users.length >= event.limit) {
       event.freezeUntil = now + Number(event.freezeDuration);
+      this.emit("update", { type: "freeze", event });
       return { status: "wait", waitTime: Number(event.freezeDuration) / 1000 };
     }
 
-    // join
     const token = uuidv4();
     event.users.push({ userId, token, joinedAt: now });
 
@@ -70,6 +70,7 @@ class QueueManager {
       event.freezeUntil = now + Number(event.freezeDuration);
     }
 
+    this.emit("update", { type: "join", event, userId });
     return { status: "joined", token };
   }
 
@@ -79,17 +80,14 @@ class QueueManager {
     if (!event) return null;
 
     const now = Date.now();
+    if (event.freezeUntil && event.freezeUntil <= now) event.freezeUntil = null;
 
-    if (event.freezeUntil && event.freezeUntil <= now) {
-      event.freezeUntil = null;
-    }
-
-    let waitTime = 0;
-    if (event.freezeUntil) {
-      waitTime = Math.ceil((event.freezeUntil - now) / 1000);
-    }
-
-    return { ...event, waitTime };
+    return {
+      ...event,
+      waitTime: event.freezeUntil
+        ? Math.ceil((event.freezeUntil - now) / 1000)
+        : 0,
+    };
   }
 }
 
