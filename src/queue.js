@@ -1,9 +1,8 @@
 const { v4: uuidv4 } = require("uuid");
-const Redis = require("ioredis");
 
 class QueueManager {
   constructor() {
-    this.redis = new Redis(); // default localhost:6379
+    this.events = {}; // memory ke andar event queues
     this.defaultFreeze = 30 * 1000;
   }
 
@@ -19,9 +18,7 @@ class QueueManager {
     freezeDuration = null
   ) {
     const key = this._getKey(eventName, orgId);
-    const exists = await this.redis.hgetall(key);
-
-    if (exists.name) return exists; // already created
+    if (this.events[key]) return this.events[key]; // already created
 
     const event = {
       name: eventName,
@@ -31,51 +28,46 @@ class QueueManager {
       createdAt: Date.now(),
       freezeUntil: null,
       freezeDuration: freezeDuration || this.defaultFreeze,
+      users: [],
     };
 
-    await this.redis.hset(key, event);
-    await this.redis.set(`${key}:users`, JSON.stringify([]));
+    this.events[key] = event;
     return event;
   }
 
   async joinQueue(eventName, orgId, userId) {
     const key = this._getKey(eventName, orgId);
-    const event = await this.redis.hgetall(key);
-    if (!event.name) throw new Error("Event not found");
+    const event = this.events[key];
+    if (!event) throw new Error("Event not found");
 
     const now = Date.now();
 
     // cleanup freeze
-    if (event.freezeUntil && Number(event.freezeUntil) <= now) {
+    if (event.freezeUntil && event.freezeUntil <= now) {
       event.freezeUntil = null;
     }
 
-    if (event.freezeUntil && Number(event.freezeUntil) > now) {
+    if (event.freezeUntil && event.freezeUntil > now) {
       const remaining = Math.ceil((event.freezeUntil - now) / 1000);
       return { status: "wait", waitTime: remaining };
     }
 
-    let users = JSON.parse(await this.redis.get(`${key}:users`)) || [];
-
     // already joined
-    if (users.find((u) => u.userId === userId)) {
+    if (event.users.find((u) => u.userId === userId)) {
       return { status: "already", userId };
     }
 
-    if (users.length >= event.limit) {
+    if (event.users.length >= event.limit) {
       event.freezeUntil = now + Number(event.freezeDuration);
-      await this.redis.hset(key, event);
       return { status: "wait", waitTime: Number(event.freezeDuration) / 1000 };
     }
 
     // join
     const token = uuidv4();
-    users.push({ userId, token, joinedAt: now });
-    await this.redis.set(`${key}:users`, JSON.stringify(users));
+    event.users.push({ userId, token, joinedAt: now });
 
-    if (users.length >= event.limit) {
+    if (event.users.length >= event.limit) {
       event.freezeUntil = now + Number(event.freezeDuration);
-      await this.redis.hset(key, event);
     }
 
     return { status: "joined", token };
@@ -83,13 +75,12 @@ class QueueManager {
 
   async getQueueStatus(eventName, orgId) {
     const key = this._getKey(eventName, orgId);
-    const event = await this.redis.hgetall(key);
-    if (!event.name) return null;
+    const event = this.events[key];
+    if (!event) return null;
 
-    let users = JSON.parse(await this.redis.get(`${key}:users`)) || [];
     const now = Date.now();
 
-    if (event.freezeUntil && Number(event.freezeUntil) <= now) {
+    if (event.freezeUntil && event.freezeUntil <= now) {
       event.freezeUntil = null;
     }
 
@@ -98,7 +89,7 @@ class QueueManager {
       waitTime = Math.ceil((event.freezeUntil - now) / 1000);
     }
 
-    return { ...event, users, waitTime };
+    return { ...event, waitTime };
   }
 }
 
