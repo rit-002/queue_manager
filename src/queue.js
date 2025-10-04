@@ -1,5 +1,5 @@
-const { v4: uuidv4 } = require("uuid");
-const EventEmitter = require("events");
+import { v4 as uuidv4 } from "uuid";
+import EventEmitter from "events";
 
 class QueueManager extends EventEmitter {
   constructor() {
@@ -91,4 +91,5 @@ class QueueManager extends EventEmitter {
   }
 }
 
-module.exports = QueueManager;
+// ✅ ESM export
+export default QueueManager;
