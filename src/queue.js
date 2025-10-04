@@ -4,92 +4,72 @@ import EventEmitter from "events";
 class QueueManager extends EventEmitter {
   constructor() {
     super();
-    this.events = {};
-    this.defaultFreeze = 30 * 1000;
+    this.queues = {}; // { "eventId": { name, limit, freezeUntil, users: [] } }
+    this.defaultFreeze = 30 * 1000; // 30 seconds
   }
 
-  _getKey(eventName, orgId) {
-    return `queue:${eventName}_${orgId}`;
+  _getQueueKey(eventId) {
+    return `queue:${eventId}`;
   }
 
-  async createQueue(
-    eventName,
-    orgId,
-    limit = 1,
-    description = "",
-    freezeDuration = null
-  ) {
-    const key = this._getKey(eventName, orgId);
-    if (this.events[key]) return this.events[key];
-
-    const event = {
-      name: eventName,
-      orgId,
-      limit,
-      description,
-      createdAt: Date.now(),
-      freezeUntil: null,
-      freezeDuration: freezeDuration || this.defaultFreeze,
-      users: [],
-    };
-
-    this.events[key] = event;
-    this.emit("update", { type: "create", event });
-    return event;
+  createQueue(eventId, name, limit = 1) {
+    const key = this._getQueueKey(eventId);
+    if (this.queues[key]) throw new Error("Queue already exists.");
+    this.queues[key] = { name, limit, freezeUntil: null, users: [] };
+    this.emit("queueCreated", { eventId, name, limit });
+    return this.queues[key];
   }
 
-  async joinQueue(eventName, orgId, userId) {
-    const key = this._getKey(eventName, orgId);
-    const event = this.events[key];
-    if (!event) throw new Error("Event not found");
+  joinQueue(eventId, user) {
+    const key = this._getQueueKey(eventId);
+    const queue = this.queues[key];
+    if (!queue) throw new Error("Queue does not exist.");
 
     const now = Date.now();
-    if (event.freezeUntil && event.freezeUntil <= now) event.freezeUntil = null;
-
-    if (event.freezeUntil && event.freezeUntil > now) {
-      return {
-        status: "wait",
-        waitTime: Math.ceil((event.freezeUntil - now) / 1000),
-      };
+    if (queue.freezeUntil && now < queue.freezeUntil) {
+      const waitTime = Math.ceil((queue.freezeUntil - now) / 1000);
+      throw new Error(`Queue frozen. Try again in ${waitTime} sec.`);
     }
 
-    if (event.users.find((u) => u.userId === userId)) {
-      return { status: "already", userId };
-    }
-
-    if (event.users.length >= event.limit) {
-      event.freezeUntil = now + Number(event.freezeDuration);
-      this.emit("update", { type: "freeze", event });
-      return { status: "wait", waitTime: Number(event.freezeDuration) / 1000 };
+    if (queue.users.length >= queue.limit) {
+      queue.freezeUntil = now + this.defaultFreeze;
+      throw new Error("Queue limit reached. Try after 30 sec.");
     }
 
     const token = uuidv4();
-    event.users.push({ userId, token, joinedAt: now });
+    const joinedAt = new Date().toISOString();
+    const userRecord = { ...user, token, joinedAt };
+    queue.users.push(userRecord);
 
-    if (event.users.length >= event.limit) {
-      event.freezeUntil = now + Number(event.freezeDuration);
-    }
+    this.emit("userJoined", {
+      eventId,
+      user: userRecord,
+      currentUsers: queue.users.length,
+    });
 
-    this.emit("update", { type: "join", event, userId });
-    return { status: "joined", token };
+    return userRecord;
   }
 
-  async getQueueStatus(eventName, orgId) {
-    const key = this._getKey(eventName, orgId);
-    const event = this.events[key];
-    if (!event) return null;
+  leaveQueue(eventId, token) {
+    const key = this._getQueueKey(eventId);
+    const queue = this.queues[key];
+    if (!queue) throw new Error("Queue does not exist.");
 
-    const now = Date.now();
-    if (event.freezeUntil && event.freezeUntil <= now) event.freezeUntil = null;
+    const index = queue.users.findIndex((u) => u.token === token);
+    if (index === -1) throw new Error("User not in queue.");
 
-    return {
-      ...event,
-      waitTime: event.freezeUntil
-        ? Math.ceil((event.freezeUntil - now) / 1000)
-        : 0,
-    };
+    const [user] = queue.users.splice(index, 1);
+    this.emit("userLeft", { eventId, user, currentUsers: queue.users.length });
+
+    return user;
+  }
+
+  getQueueStatus(eventId) {
+    const key = this._getQueueKey(eventId);
+    const queue = this.queues[key];
+    if (!queue) throw new Error("Queue does not exist.");
+    return queue;
   }
 }
 
-// ✅ ESM export
 export default QueueManager;
