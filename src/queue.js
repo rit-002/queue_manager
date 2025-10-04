@@ -1,74 +1,114 @@
 import { v4 as uuidv4 } from "uuid";
 import EventEmitter from "events";
+import Redis from "ioredis";
 
 class QueueManager extends EventEmitter {
-  constructor() {
+  constructor(redisOptions = {}) {
     super();
-    this.queues = {}; // { "eventId": { name, limit, freezeUntil, users: [] } }
-    this.defaultFreeze = 30 * 1000; // 30 seconds
+    this.redis = new Redis(redisOptions);
+    this.defaultFreeze = 30; // freeze in seconds
   }
 
-  _getQueueKey(eventId) {
-    return `queue:${eventId}`;
+  _queueKey(eventId) {
+    return `queue:${eventId}:users`;
   }
 
-  createQueue(eventId, name, limit = 1) {
-    const key = this._getQueueKey(eventId);
-    if (this.queues[key]) throw new Error("Queue already exists.");
-    this.queues[key] = { name, limit, freezeUntil: null, users: [] };
-    this.emit("queueCreated", { eventId, name, limit });
-    return this.queues[key];
+  _freezeKey(eventId) {
+    return `queue:${eventId}:freeze`;
   }
 
-  joinQueue(eventId, user) {
-    const key = this._getQueueKey(eventId);
-    const queue = this.queues[key];
-    if (!queue) throw new Error("Queue does not exist.");
+  /**
+   * Create a queue (sets initial empty list if not exists)
+   */
+  async createQueue(eventId, name, limit = 1) {
+    const exists = await this.redis.exists(this._queueKey(eventId));
+    if (!exists) {
+      await this.redis.hmset(`queue:${eventId}:meta`, { name, limit });
+      await this.redis.del(this._queueKey(eventId)); // start empty
+      this.emit("queueCreated", { eventId, name, limit });
+    } else {
+      throw new Error("Queue already exists.");
+    }
+  }
 
-    const now = Date.now();
-    if (queue.freezeUntil && now < queue.freezeUntil) {
-      const waitTime = Math.ceil((queue.freezeUntil - now) / 1000);
-      throw new Error(`Queue frozen. Try again in ${waitTime} sec.`);
+  /**
+   * Join queue
+   */
+  async joinQueue(eventId, user) {
+    const freeze = await this.redis.ttl(this._freezeKey(eventId));
+    if (freeze > 0) {
+      throw new Error(`Queue is frozen. Try again in ${freeze} sec.`);
     }
 
-    if (queue.users.length >= queue.limit) {
-      queue.freezeUntil = now + this.defaultFreeze;
-      throw new Error("Queue limit reached. Try after 30 sec.");
+    const meta = await this.redis.hgetall(`queue:${eventId}:meta`);
+    if (!meta || !meta.limit) throw new Error("Queue does not exist.");
+
+    const users = await this.redis.lrange(this._queueKey(eventId), 0, -1);
+
+    if (users.length >= parseInt(meta.limit)) {
+      // set freeze
+      await this.redis.set(
+        this._freezeKey(eventId),
+        1,
+        "EX",
+        this.defaultFreeze
+      );
+      throw new Error(
+        `Queue limit reached. Try again in ${this.defaultFreeze} sec.`
+      );
     }
 
     const token = uuidv4();
     const joinedAt = new Date().toISOString();
     const userRecord = { ...user, token, joinedAt };
-    queue.users.push(userRecord);
+
+    await this.redis.rpush(this._queueKey(eventId), JSON.stringify(userRecord));
 
     this.emit("userJoined", {
       eventId,
       user: userRecord,
-      currentUsers: queue.users.length,
+      currentUsers: users.length + 1,
     });
 
     return userRecord;
   }
 
-  leaveQueue(eventId, token) {
-    const key = this._getQueueKey(eventId);
-    const queue = this.queues[key];
-    if (!queue) throw new Error("Queue does not exist.");
+  /**
+   * Leave queue
+   */
+  async leaveQueue(eventId, token) {
+    const users = await this.redis.lrange(this._queueKey(eventId), 0, -1);
+    let userToRemove = null;
 
-    const index = queue.users.findIndex((u) => u.token === token);
-    if (index === -1) throw new Error("User not in queue.");
+    for (let u of users) {
+      const userObj = JSON.parse(u);
+      if (userObj.token === token) {
+        userToRemove = u;
+        break;
+      }
+    }
 
-    const [user] = queue.users.splice(index, 1);
-    this.emit("userLeft", { eventId, user, currentUsers: queue.users.length });
+    if (!userToRemove) throw new Error("User not in queue.");
 
-    return user;
+    await this.redis.lrem(this._queueKey(eventId), 1, userToRemove);
+    this.emit("userLeft", { eventId, token });
+    return JSON.parse(userToRemove);
   }
 
-  getQueueStatus(eventId) {
-    const key = this._getQueueKey(eventId);
-    const queue = this.queues[key];
-    if (!queue) throw new Error("Queue does not exist.");
-    return queue;
+  /**
+   * Get queue status
+   */
+  async getQueueStatus(eventId) {
+    const users = await this.redis.lrange(this._queueKey(eventId), 0, -1);
+    const meta = await this.redis.hgetall(`queue:${eventId}:meta`);
+    const freeze = await this.redis.ttl(this._freezeKey(eventId));
+
+    return {
+      name: meta.name,
+      limit: parseInt(meta.limit),
+      users: users.map((u) => JSON.parse(u)),
+      freezeUntil: freeze > 0 ? Date.now() + freeze * 1000 : null,
+    };
   }
 }
 
