@@ -1,8 +1,8 @@
 {
   "name": "event-queue-manager",
-  "version": "1.0.16",
+  "version": "1.0.17",
   "type": "module",
-  "main": "src/index.js",
+  "main": "index.js",
   "scripts": {
     "test": "node test.js"
   }
