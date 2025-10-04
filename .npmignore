@@ -1,0 +1,29 @@
+# Ignore node_modules (always ignore dependencies)
+node_modules/
+
+# Ignore local logs and backup files
+*.log
+*.tgz
+
+# Ignore IDE/editor folders
+.vscode/
+.idea/
+
+# Ignore OS files
+.DS_Store
+Thumbs.db
+
+# Ignore test files
+test.js
+tests/
+__tests__/
+
+# Ignore environment files
+.env
+.env.local
+.env.*.local
+
+# Ignore build outputs (agar ho)
+dist/
+build/
+coverage/
