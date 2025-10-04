@@ -1,4 +1,4 @@
-import QueueManager from "./src/queue";
+import QueueManager from "./src/queue.js";
 
 export { QueueManager };
 export default QueueManager;
