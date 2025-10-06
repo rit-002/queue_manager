@@ -1,4 +1,3 @@
-import QueueManager from "./src/queue.js";
+const QueueManager = require("./src/queue.js");
 
-export { QueueManager };
-export default QueueManager;
+module.exports = { QueueManager };
